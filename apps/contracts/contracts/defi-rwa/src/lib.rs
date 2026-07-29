@@ -604,6 +604,16 @@ impl PropertyTokenContract {
             &collateral_to_seize,
         );
 
+        // Return any excess collateral to the borrower on full close
+        let excess = position.collateral_amount - collateral_to_seize;
+        if remaining_debt == 0 && excess > 0 {
+            collateral_token.transfer(
+                &env.current_contract_address(),
+                &borrower_address,
+                &excess,
+            );
+        }
+
         // Emit event
         LendingEvents::liquidation(
             &env,
@@ -621,7 +631,7 @@ impl PropertyTokenContract {
                 borrower: borrower_address,
                 principal: 0,
                 index_at_borrow: InterestStorage::get_interest_index(&env, &pool_id),
-                collateral_amount: position.collateral_amount - collateral_to_seize,
+                collateral_amount: 0,
                 collateral_asset: position.collateral_asset,
                 borrowed_at: position.borrowed_at,
             }

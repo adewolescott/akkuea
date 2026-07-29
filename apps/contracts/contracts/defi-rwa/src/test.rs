@@ -3414,8 +3414,13 @@ fn test_liquidate_zero_collateral_left() {
 #[test]
 #[should_panic(expected = "borrow position not found")]
 fn test_liquidate_double_attempt_panics() {
-    let (env, contract_id, _oracle_id, borrower, liquidator, pool_id, _usdc_addr, _xlm_addr) =
+    let (env, contract_id, _oracle_id, borrower, liquidator, pool_id, _usdc_addr, xlm_addr) =
         setup_liquidation_env();
+
+    use soroban_sdk::token::StellarAssetClient;
+    let xlm_token = StellarAssetClient::new(&env, &xlm_addr);
+
+    let borrower_xlm_before = xlm_token.balance(&borrower);
 
     // First liquidation — covers 250 of 500 (capped by close factor)
     let first = env.as_contract(&contract_id, || {
@@ -3428,6 +3433,8 @@ fn test_liquidate_double_attempt_panics() {
         )
     });
     assert_eq!(first.principal, 250_000_000, "first liquidation should leave 250 debt");
+    // After first liquidation: 1125 XLM remaining (2000 - 875)
+    assert_eq!(first.collateral_amount, 1_125_000_000_i128);
 
     // Second liquidation — covers remaining 250, fully closes position
     let second = env.as_contract(&contract_id, || {
@@ -3440,6 +3447,12 @@ fn test_liquidate_double_attempt_panics() {
         )
     });
     assert_eq!(second.principal, 0, "second liquidation should fully close");
+    assert_eq!(second.collateral_amount, 0, "no collateral should remain after full close");
+
+    // Borrower should receive excess collateral back: 1125 - 875 = 250 XLM
+    let borrower_xlm_after = xlm_token.balance(&borrower);
+    let xlm_returned = borrower_xlm_after - borrower_xlm_before;
+    assert_eq!(xlm_returned, 250_000_000_i128, "borrower should get 250 XLM excess collateral back");
 
     // Third liquidation — position is gone, should panic
     env.as_contract(&contract_id, || {
@@ -3451,6 +3464,67 @@ fn test_liquidate_double_attempt_panics() {
             100_000_000_i128,
         )
     });
+}
+
+/// Test: Excess collateral is returned to borrower on full liquidation close.
+///
+/// After two liquidations fully close a 500 USDC debt position:
+///   - First liquidation (250 debt): liquidator gets 875 XLM, 1125 XLM remains
+///   - Second liquidation (250 debt): liquidator gets 875 XLM, 250 XLM excess
+///   - The 250 XLM excess is returned to the borrower (not locked in the contract)
+///   - Returned BorrowPosition has collateral_amount = 0
+#[test]
+fn test_liquidate_excess_collateral_returned() {
+    let (env, contract_id, _oracle_id, borrower, liquidator, pool_id, _usdc_addr, xlm_addr) =
+        setup_liquidation_env();
+
+    use soroban_sdk::token::StellarAssetClient;
+    let xlm_token = StellarAssetClient::new(&env, &xlm_addr);
+
+    let borrower_xlm_before = xlm_token.balance(&borrower);
+    assert_eq!(borrower_xlm_before, 0_i128, "borrower starts with 0 XLM (all collateral locked)");
+
+    // First liquidation — covers 250 of 500
+    env.as_contract(&contract_id, || {
+        PropertyTokenContract::liquidate(
+            env.clone(),
+            liquidator.clone(),
+            pool_id.clone(),
+            borrower.clone(),
+            500_000_000_i128,
+        )
+    });
+    // After first: 1125 XLM still locked
+
+    // Second liquidation — covers remaining 250, full close
+    let result = env.as_contract(&contract_id, || {
+        PropertyTokenContract::liquidate(
+            env.clone(),
+            liquidator.clone(),
+            pool_id.clone(),
+            borrower.clone(),
+            250_000_000_i128,
+        )
+    });
+
+    // Position should be fully closed with zero collateral
+    assert_eq!(result.principal, 0, "position should be fully closed");
+    assert_eq!(result.collateral_amount, 0, "no collateral should remain in position");
+
+    // Borrower should receive the excess: 1125 - 875 = 250 XLM
+    let borrower_xlm_after = xlm_token.balance(&borrower);
+    let xlm_returned = borrower_xlm_after - borrower_xlm_before;
+    assert_eq!(xlm_returned, 250_000_000_i128, "borrower should receive 250 XLM excess collateral");
+
+    // Verify position was removed from storage
+    let stored = env.as_contract(&contract_id, || {
+        PositionStorage::get_borrow(&env, &borrower, &pool_id)
+    });
+    assert!(stored.is_none(), "position should be removed after full close");
+
+    // Verify contract holds no more XLM (all distributed)
+    let contract_xlm = xlm_token.balance(&contract_id);
+    assert_eq!(contract_xlm, 0_i128, "contract should hold 0 XLM after full close");
 }
 
 /// Test 7: Liquidation penalty bonus is correctly calculated.
