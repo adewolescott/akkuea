@@ -3501,3 +3501,71 @@ fn test_liquidate_penalty_bonus_verified() {
     let bonus = xlm_value - usdc_spent;
     assert_eq!(bonus, 12_500_000_i128, "liquidation bonus should be 5%% (12.5 USDC)");
 }
+
+/// Verify the close factor cap is enforced: when the liquidator requests
+/// more debt coverage than the 50% close factor allows, the request is
+/// silently capped and state remains consistent.
+///
+/// Liquidator requests 400 USDC of 500 total debt → capped to 250 (50%).
+/// Expected:
+///   - Only 250 USDC spent (not 400)
+///   - Remaining debt = 250, remaining collateral = 1125 XLM
+///   - Liquidator receives 875 XLM (250 + 5% / $0.30)
+///   - total_borrows reduced by 250 (not 400)
+#[test]
+fn test_liquidate_close_factor_caps_request() {
+    use soroban_sdk::token::{StellarAssetClient, TokenClient};
+
+    let (env, contract_id, _oracle_id, borrower, liquidator, pool_id, usdc_addr, xlm_addr) =
+        setup_liquidation_env();
+
+    let xlm_token = StellarAssetClient::new(&env, &xlm_addr);
+    let usdc_client = TokenClient::new(&env, &usdc_addr);
+
+    let liquidator_xlm_before = xlm_token.balance(&liquidator);
+    let liquidator_usdc_before = usdc_client.balance(&liquidator);
+    let total_borrows_before =
+        env.as_contract(&contract_id, || PoolStorage::get_total_borrows(&env, &pool_id));
+
+    // Request 400 USDC — close factor caps to 250 (50% of 500)
+    let result = env.as_contract(&contract_id, || {
+        PropertyTokenContract::liquidate(
+            env.clone(),
+            liquidator.clone(),
+            pool_id.clone(),
+            borrower.clone(),
+            400_000_000_i128,
+        )
+    });
+
+    // Close factor should cap the request
+    assert_eq!(result.principal, 250_000_000, "close factor should cap to 50%%");
+
+    // Verify only 250 USDC was spent (not the requested 400)
+    let liquidator_usdc_after = usdc_client.balance(&liquidator);
+    let usdc_spent = liquidator_usdc_before - liquidator_usdc_after;
+    assert_eq!(usdc_spent, 250_000_000_i128, "only 250 USDC should be spent (capped)");
+
+    // Verify liquidator received 875 XLM = (250 + 12.5 penalty) / 0.30
+    let liquidator_xlm_after = xlm_token.balance(&liquidator);
+    let xlm_received = liquidator_xlm_after - liquidator_xlm_before;
+    assert_eq!(xlm_received, 875_000_000_i128, "liquidator should receive 875 XLM");
+
+    // Verify position state: remaining debt = 250, remaining collateral = 1125
+    let stored = env.as_contract(&contract_id, || {
+        PositionStorage::get_borrow(&env, &borrower, &pool_id)
+    });
+    assert!(stored.is_some(), "position should still exist");
+    let stored = stored.unwrap();
+    assert_eq!(stored.principal, 250_000_000, "remaining debt should be 250");
+    assert_eq!(stored.collateral_amount, 1_125_000_000_i128, "remaining collateral should be 1125");
+
+    // Verify total_borrows reduced by only 250, not 400
+    let total_borrows_after =
+        env.as_contract(&contract_id, || PoolStorage::get_total_borrows(&env, &pool_id));
+    assert_eq!(
+        total_borrows_after,
+        total_borrows_before - 250_000_000,
+        "total_borrows reduced by 250 (capped), not 400"
+    );
+}
