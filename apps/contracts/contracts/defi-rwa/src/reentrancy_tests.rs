@@ -125,6 +125,7 @@ fn setup_reentrancy_env() -> ReentrancyTestEnv<'static> {
         collateral_factor: 750_000_000_000_000_000, // 75%
         liquidation_threshold: 800_000_000_000_000_000, // 80%
         liquidation_penalty: 50_000_000_000_000_000, // 5%
+        close_factor: 500_000_000_000_000_000,      // 50%
         reserve_factor: 1000,                       // 10%
         is_active: true,
         created_at: env.ledger().timestamp(),

@@ -105,6 +105,7 @@ fn create_default_pool(setup: &TestSetup) -> String {
         &750_000_000_000_000_000_i128, // 75% collateral factor
         &800_000_000_000_000_000_i128, // 80% liquidation threshold
         &50_000_000_000_000_000_i128,  // 5% liquidation penalty
+        &500_000_000_000_000_000_i128, // 50% close factor
         &1000_u32,                     // 10% reserve factor
     );
     pool_id
@@ -135,6 +136,7 @@ fn test_store_and_retrieve_lending_pool() {
         collateral_factor: 750_000_000_000_000_000,
         liquidation_threshold: 800_000_000_000_000_000,
         liquidation_penalty: 50_000_000_000_000_000,
+        close_factor: 500_000_000_000_000_000,
         reserve_factor: 1000,
         is_active: true,
         created_at: 1700000000,
@@ -202,6 +204,7 @@ fn setup_borrow_test() -> BorrowTestSetup<'static> {
         collateral_factor: 750_000_000_000_000_000,
         liquidation_threshold: 800_000_000_000_000_000,
         liquidation_penalty: 50_000_000_000_000_000,
+        close_factor: 500_000_000_000_000_000,
         reserve_factor: 1000,
         is_active: true,
         created_at: env.ledger().timestamp(),
@@ -295,6 +298,7 @@ fn test_create_pool_unauthorized() {
         &750_000_000_000_000_000_i128,
         &800_000_000_000_000_000_i128,
         &50_000_000_000_000_000_i128,
+        &500_000_000_000_000_000_i128,
         &1000_u32,
     );
 }
@@ -848,6 +852,7 @@ fn test_multiple_pools_isolation() {
         &750_000_000_000_000_000_i128,
         &800_000_000_000_000_000_i128,
         &50_000_000_000_000_000_i128,
+        &500_000_000_000_000_000_i128,
         &1000_u32,
     );
 
@@ -860,6 +865,7 @@ fn test_multiple_pools_isolation() {
         &700_000_000_000_000_000_i128,
         &750_000_000_000_000_000_i128,
         &60_000_000_000_000_000_i128,
+        &500_000_000_000_000_000_i128,
         &1200_u32,
     );
 
@@ -1167,6 +1173,7 @@ fn test_borrow_with_sufficient_collateral() {
         collateral_factor: 750_000_000_000_000_000, // 75%
         liquidation_threshold: 800_000_000_000_000_000, // 80%
         liquidation_penalty: 50_000_000_000_000_000, // 5%
+        close_factor: 500_000_000_000_000_000,        // 50%
         reserve_factor: 1000,                       // 10%
         is_active: true,
         created_at: env.ledger().timestamp(),
@@ -1294,6 +1301,7 @@ fn test_borrow_with_insufficient_collateral() {
         collateral_factor: 750_000_000_000_000_000, // 75%
         liquidation_threshold: 800_000_000_000_000_000, // 80%
         liquidation_penalty: 50_000_000_000_000_000, // 5%
+        close_factor: 500_000_000_000_000_000,
         reserve_factor: 1000,
         is_active: true,
         created_at: env.ledger().timestamp(),
@@ -1382,6 +1390,7 @@ fn test_borrow_from_paused_pool() {
         collateral_factor: 750_000_000_000_000_000,
         liquidation_threshold: 800_000_000_000_000_000,
         liquidation_penalty: 50_000_000_000_000_000,
+        close_factor: 500_000_000_000_000_000,
         reserve_factor: 1000,
         is_active: true,
         created_at: env.ledger().timestamp(),
@@ -1469,6 +1478,7 @@ fn test_borrow_exceeding_liquidity() {
         collateral_factor: 750_000_000_000_000_000,
         liquidation_threshold: 800_000_000_000_000_000,
         liquidation_penalty: 50_000_000_000_000_000,
+        close_factor: 500_000_000_000_000_000,
         reserve_factor: 1000,
         is_active: true,
         created_at: env.ledger().timestamp(),
@@ -1622,6 +1632,7 @@ fn test_borrow_with_zero_index() {
         collateral_factor: 750_000_000_000_000_000,
         liquidation_threshold: 800_000_000_000_000_000,
         liquidation_penalty: 50_000_000_000_000_000,
+        close_factor: 500_000_000_000_000_000,
         reserve_factor: 1000,
         is_active: true,
         created_at: env.ledger().timestamp(),
@@ -2711,6 +2722,7 @@ fn test_borrow_with_stale_oracle() {
         collateral_factor: 750_000_000_000_000_000,
         liquidation_threshold: 800_000_000_000_000_000,
         liquidation_penalty: 50_000_000_000_000_000,
+        close_factor: 500_000_000_000_000_000,
         reserve_factor: 1000,
         is_active: true,
         created_at: env.ledger().timestamp(),
@@ -2790,6 +2802,7 @@ fn test_borrow_with_zero_oracle_price() {
         collateral_factor: 750_000_000_000_000_000,
         liquidation_threshold: 800_000_000_000_000_000,
         liquidation_penalty: 50_000_000_000_000_000,
+        close_factor: 500_000_000_000_000_000,
         reserve_factor: 1000,
         is_active: true,
         created_at: env.ledger().timestamp(),
@@ -3067,6 +3080,7 @@ fn setup_liquidation_env(
         collateral_factor: 750_000_000_000_000_000,  // 75%
         liquidation_threshold: 800_000_000_000_000_000, // 80%
         liquidation_penalty: 50_000_000_000_000_000,  // 5%
+        close_factor: 500_000_000_000_000_000,        // 50%
         reserve_factor: 1000,
         is_active: true,
         created_at: env.ledger().timestamp(),
@@ -3101,7 +3115,7 @@ fn setup_liquidation_env(
     usdc_token.mint(&contract_id, &10_000_000_000);
 
     // Borrower borrows 500 USDC with 2000 XLM at $1.00/XLM
-    // HF = (2000*0.8)/500 = 3.2 → passes both LTV and HF checks ✓
+    // HF = (2000*0.8)/500 = 3.2 → passes both LTV and HF checks
     env.as_contract(&contract_id, || {
         PropertyTokenContract::borrow(
             env.clone(),
@@ -3114,7 +3128,7 @@ fn setup_liquidation_env(
     });
 
     // Drop XLM price to $0.30 → HF = (2000*0.30*0.8)/500 = 480/500 = 0.96
-    // Now underwater (HF < 1.0) ✓
+    // Now underwater (HF < 1.0)
     let half_price = (3 * PRECISION) / 10; // 0.30 * PRECISION
     env.as_contract(&oracle_id, || {
         MockOracleContract::set_price(
@@ -3137,12 +3151,13 @@ fn setup_liquidation_env(
     )
 }
 
-/// Test 1: Full liquidation closes the position entirely.
+/// Test 1: Close factor caps liquidation to 50% (250 of 500 debt).
 ///
-/// Liquidator repays the full 500 USDC debt. Expected:
-///   - Position removed from storage
-///   - total_borrows = 0
-///   - Liquidator receives 1750 XLM (500 + 5% penalty = 525 debt value / $0.30)
+/// Liquidator requests 500 USDC but the 50% close factor caps it to 250.
+/// Expected:
+///   - Position remains with 250 debt and 1125 XLM collateral
+///   - total_borrows reduced by 250
+///   - Liquidator receives 875 XLM (250 + 5% penalty = 262.5 / $0.30)
 #[test]
 fn test_liquidate_full_position() {
     let (env, contract_id, _oracle_id, borrower, liquidator, pool_id, usdc_addr, xlm_addr) =
@@ -3156,7 +3171,7 @@ fn test_liquidate_full_position() {
         env.as_contract(&contract_id, || PoolStorage::get_total_borrows(&env, &pool_id));
     assert!(total_borrows_before > 0, "should have outstanding borrows");
 
-    // Liquidate the full position
+    // Attempt to liquidate 500 USDC — close factor caps it to 250 (50%)
     let result = env.as_contract(&contract_id, || {
         PropertyTokenContract::liquidate(
             env.clone(),
@@ -3167,25 +3182,27 @@ fn test_liquidate_full_position() {
         )
     });
 
-    // Position should show zero principal
-    assert_eq!(result.principal, 0, "full liquidation should zero out principal");
+    // Position should show remaining principal (250 = 500 - 250 capped)
+    assert_eq!(result.principal, 250_000_000, "close factor should cap at 50%%");
 
-    // Position should be removed from storage
+    // Position should still exist (not fully closed)
     let stored = env.as_contract(&contract_id, || {
         PositionStorage::get_borrow(&env, &borrower, &pool_id)
     });
-    assert!(stored.is_none(), "position should be removed after full liquidation");
+    assert!(stored.is_some(), "position should still exist after capped liquidation");
+    let stored = stored.unwrap();
+    assert_eq!(stored.principal, 250_000_000);
+    assert_eq!(stored.collateral_amount, 1_125_000_000_i128);
 
-    // Total borrows should be zero
+    // Total borrows reduced by 250
     let total_borrows_after =
         env.as_contract(&contract_id, || PoolStorage::get_total_borrows(&env, &pool_id));
-    assert_eq!(total_borrows_after, 0, "total_borrows should be zero after full liquidation");
+    assert_eq!(total_borrows_after, total_borrows_before - 250_000_000);
 
-    // Liquidator should have received collateral
+    // Liquidator received 875 XLM = (250 + 12.5 penalty) / 0.30
     let liquidator_xlm_after = xlm_token.balance(&liquidator);
     let xlm_received = liquidator_xlm_after - liquidator_xlm_before;
-    // 1750 XLM = (500 + 25) / 0.30, not clamped (1750 < 2000)
-    assert_eq!(xlm_received, 1_750_000_000_i128, "liquidator should receive 1750 XLM");
+    assert_eq!(xlm_received, 875_000_000_i128, "liquidator should receive 875 XLM");
 }
 
 /// Test 2: Partial liquidation leaves remaining debt and collateral.
@@ -3280,6 +3297,7 @@ fn test_liquidate_healthy_position_rejected() {
         collateral_factor: 750_000_000_000_000_000,
         liquidation_threshold: 800_000_000_000_000_000,
         liquidation_penalty: 50_000_000_000_000_000,
+        close_factor: 500_000_000_000_000_000,
         reserve_factor: 1000,
         is_active: true,
         created_at: env.ledger().timestamp(),
@@ -3339,15 +3357,15 @@ fn test_liquidate_healthy_position_rejected() {
 ///
 /// When the penalty pushes collateral_to_seize above position.collateral_amount,
 /// the seized amount is clamped to the full collateral, leaving zero collateral.
-/// Scenario: price drops to $0.20/XLM, so full liquidation tries to seize
-/// 525/0.20 = 2625 XLM → clamped to 2000 XLM (all collateral seized).
+/// With 50% close factor, debt covered = 250. Price drops to $0.10/XLM.
+/// Seize = (250 + 12.5) / 0.10 = 2625 → clamped to 2000 XLM.
 #[test]
 fn test_liquidate_zero_collateral_left() {
     let (env, contract_id, oracle_id, borrower, liquidator, pool_id, _usdc_addr, xlm_addr) =
         setup_liquidation_env();
 
-    // Drop price further to $0.20/XLM to trigger clamp
-    let low_price = (2 * PRECISION) / 10; // 0.20 * PRECISION
+    // Drop price to $0.10/XLM to trigger clamp (2625 > 2000)
+    let low_price = PRECISION / 10; // 0.10 * PRECISION
     env.as_contract(&oracle_id, || {
         MockOracleContract::set_price(
             env.clone(),
@@ -3361,7 +3379,7 @@ fn test_liquidate_zero_collateral_left() {
     let xlm_token = StellarAssetClient::new(&env, &xlm_addr);
     let liquidator_xlm_before = xlm_token.balance(&liquidator);
 
-    // Liquidate full position
+    // Liquidate: close factor caps to 250, clamp seizes all 2000 XLM
     let result = env.as_contract(&contract_id, || {
         PropertyTokenContract::liquidate(
             env.clone(),
@@ -3372,13 +3390,16 @@ fn test_liquidate_zero_collateral_left() {
         )
     });
 
-    assert_eq!(result.principal, 0, "full liquidation should zero out principal");
+    assert_eq!(result.principal, 250_000_000, "remaining debt after capped liquidation");
 
-    // Position should be removed
+    // Position should still exist with zero collateral
     let stored = env.as_contract(&contract_id, || {
         PositionStorage::get_borrow(&env, &borrower, &pool_id)
     });
-    assert!(stored.is_none(), "position should be removed");
+    assert!(stored.is_some(), "position should still exist");
+    let stored = stored.unwrap();
+    assert_eq!(stored.collateral_amount, 0, "all collateral should be seized (clamped)");
+    assert_eq!(stored.principal, 250_000_000);
 
     // Liquidator received ALL 2000 XLM (clamped from 2625)
     let liquidator_xlm_after = xlm_token.balance(&liquidator);
@@ -3386,15 +3407,18 @@ fn test_liquidate_zero_collateral_left() {
     assert_eq!(xlm_received, 2_000_000_000_i128, "all 2000 XLM collateral seized (clamped)");
 }
 
-/// Test 5: Double liquidation attempt panics — position already removed.
+/// Test 5: Double liquidation closes position, third attempt panics.
+///
+/// With 50% close factor: first liquidation covers 250, second covers
+/// the remaining 250 (fully closing), third panics because position is gone.
 #[test]
 #[should_panic(expected = "borrow position not found")]
 fn test_liquidate_double_attempt_panics() {
     let (env, contract_id, _oracle_id, borrower, liquidator, pool_id, _usdc_addr, _xlm_addr) =
         setup_liquidation_env();
 
-    // First liquidation — fully closes the position
-    env.as_contract(&contract_id, || {
+    // First liquidation — covers 250 of 500 (capped by close factor)
+    let first = env.as_contract(&contract_id, || {
         PropertyTokenContract::liquidate(
             env.clone(),
             liquidator.clone(),
@@ -3403,23 +3427,36 @@ fn test_liquidate_double_attempt_panics() {
             500_000_000_i128,
         )
     });
+    assert_eq!(first.principal, 250_000_000, "first liquidation should leave 250 debt");
 
-    // Second liquidation — position is gone, should panic
+    // Second liquidation — covers remaining 250, fully closes position
+    let second = env.as_contract(&contract_id, || {
+        PropertyTokenContract::liquidate(
+            env.clone(),
+            liquidator.clone(),
+            pool_id.clone(),
+            borrower.clone(),
+            250_000_000_i128,
+        )
+    });
+    assert_eq!(second.principal, 0, "second liquidation should fully close");
+
+    // Third liquidation — position is gone, should panic
     env.as_contract(&contract_id, || {
         PropertyTokenContract::liquidate(
             env.clone(),
             liquidator.clone(),
             pool_id.clone(),
             borrower.clone(),
-            500_000_000_i128,
+            100_000_000_i128,
         )
     });
 }
 
 /// Test 7: Liquidation penalty bonus is correctly calculated.
 ///
-/// Liquidator repays 500 USDC, receives 1750 XLM worth 525 USDC at $0.30/XLM.
-/// That's a 5% bonus on the 500 USDC debt covered.
+/// With 50% close factor, debt covered = 250. Liquidator receives 875 XLM
+/// worth 262.5 USDC at $0.30/XLM — a 5% bonus on the 250 USDC debt covered.
 #[test]
 fn test_liquidate_penalty_bonus_verified() {
     let (env, contract_id, _oracle_id, borrower, liquidator, pool_id, usdc_addr, xlm_addr) =
@@ -3432,7 +3469,7 @@ fn test_liquidate_penalty_bonus_verified() {
     let liquidator_xlm_before = xlm_token.balance(&liquidator);
     let liquidator_usdc_before = usdc_client.balance(&liquidator);
 
-    // Liquidate full position
+    // Liquidate: close factor caps to 250 of 500
     let result = env.as_contract(&contract_id, || {
         PropertyTokenContract::liquidate(
             env.clone(),
@@ -3442,7 +3479,7 @@ fn test_liquidate_penalty_bonus_verified() {
             500_000_000_i128,
         )
     });
-    assert_eq!(result.principal, 0);
+    assert_eq!(result.principal, 250_000_000);
 
     let liquidator_xlm_after = xlm_token.balance(&liquidator);
     let liquidator_usdc_after = usdc_client.balance(&liquidator);
@@ -3450,17 +3487,17 @@ fn test_liquidate_penalty_bonus_verified() {
     let xlm_received = liquidator_xlm_after - liquidator_xlm_before;
     let usdc_spent = liquidator_usdc_before - liquidator_usdc_after;
 
-    // Liquidator spent 500 USDC
-    assert_eq!(usdc_spent, 500_000_000_i128, "liquidator should spend 500 USDC");
+    // Liquidator spent 250 USDC (capped by close factor)
+    assert_eq!(usdc_spent, 250_000_000_i128, "liquidator should spend 250 USDC");
 
-    // Liquidator received 1750 XLM @ $0.30 = $525 worth
-    assert_eq!(xlm_received, 1_750_000_000_i128, "liquidator should receive 1750 XLM");
+    // Liquidator received 875 XLM @ $0.30 = $262.50 worth
+    assert_eq!(xlm_received, 875_000_000_i128, "liquidator should receive 875 XLM");
 
-    // Value of XLM received: 1750 * 0.30 = 525 USDC
+    // Value of XLM received: 875 * 0.30 = 262.5 USDC
     let xlm_value = (xlm_received * 300_000_000_000_000_000_i128) / PRECISION;
-    assert_eq!(xlm_value, 525_000_000_i128, "collateral value should be 525 USDC");
+    assert_eq!(xlm_value, 262_500_000_i128, "collateral value should be 262.5 USDC");
 
-    // Bonus = 525 - 500 = 25 = 5% of 500 ✓
+    // Bonus = 262.5 - 250 = 12.5 = 5% of 250
     let bonus = xlm_value - usdc_spent;
-    assert_eq!(bonus, 25_000_000_i128, "liquidation bonus should be 5%% (25 USDC)");
+    assert_eq!(bonus, 12_500_000_i128, "liquidation bonus should be 5%% (12.5 USDC)");
 }

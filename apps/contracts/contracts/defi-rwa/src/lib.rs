@@ -277,6 +277,7 @@ impl PropertyTokenContract {
         collateral_factor: i128,
         liquidation_threshold: i128,
         liquidation_penalty: i128,
+        close_factor: i128,
         reserve_factor: u32,
     ) {
         require_admin(&env, &admin);
@@ -292,6 +293,7 @@ impl PropertyTokenContract {
             collateral_factor,
             liquidation_threshold,
             liquidation_penalty,
+            close_factor,
             reserve_factor,
             is_active: true,
             created_at: env.ledger().timestamp(),
@@ -530,6 +532,14 @@ impl PropertyTokenContract {
         let current_debt = PositionStorage::calculate_current_debt(&env, &position);
         let debt_to_cover = if debt_to_cover > current_debt {
             current_debt
+        } else {
+            debt_to_cover
+        };
+
+        // Enforce close factor — cap % of debt liquidatable per tx
+        let max_liquidatable = (current_debt * pool.close_factor) / PRECISION;
+        let debt_to_cover = if debt_to_cover > max_liquidatable {
+            max_liquidatable
         } else {
             debt_to_cover
         };
