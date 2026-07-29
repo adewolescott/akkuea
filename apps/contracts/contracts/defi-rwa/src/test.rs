@@ -3414,11 +3414,19 @@ fn test_liquidate_zero_collateral_left() {
 #[test]
 #[should_panic(expected = "borrow position not found")]
 fn test_liquidate_double_attempt_panics() {
-    let (env, contract_id, _oracle_id, borrower, liquidator, pool_id, _usdc_addr, xlm_addr) =
+    let (env, contract_id, oracle_id, borrower, liquidator, pool_id, _usdc_addr, xlm_addr) =
         setup_liquidation_env();
 
     use soroban_sdk::token::StellarAssetClient;
     let xlm_token = StellarAssetClient::new(&env, &xlm_addr);
+
+    // Get the admin address to set close factor later
+    let admin = env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .get::<_, Address>(&LendingKey::Admin)
+            .expect("admin not set")
+    });
 
     let borrower_xlm_before = xlm_token.balance(&borrower);
 
@@ -3436,6 +3444,27 @@ fn test_liquidate_double_attempt_panics() {
     // After first liquidation: 1125 XLM remaining (2000 - 875)
     assert_eq!(first.collateral_amount, 1_125_000_000_i128);
 
+    // Drop price to $0.25 so the remaining position is still underwater
+    // HF = (1125 * 0.25 * 0.8) / 250 = 0.90 < 1.0
+    env.as_contract(&oracle_id, || {
+        MockOracleContract::set_price(
+            env.clone(),
+            xlm_addr.clone(),
+            250_000_000_000_000_000_i128, // $0.25
+            env.ledger().timestamp(),
+        );
+    });
+
+    // Set close_factor to 100% so the second liquidation can fully close
+    env.as_contract(&contract_id, || {
+        PropertyTokenContract::set_close_factor(
+            env.clone(),
+            admin.clone(),
+            pool_id.clone(),
+            PRECISION, // 100%
+        );
+    });
+
     // Second liquidation — covers remaining 250, fully closes position
     let second = env.as_contract(&contract_id, || {
         PropertyTokenContract::liquidate(
@@ -3449,10 +3478,10 @@ fn test_liquidate_double_attempt_panics() {
     assert_eq!(second.principal, 0, "second liquidation should fully close");
     assert_eq!(second.collateral_amount, 0, "no collateral should remain after full close");
 
-    // Borrower should receive excess collateral back: 1125 - 875 = 250 XLM
+    // Borrower should receive excess collateral: 1125 - (250+12.5)/0.25 = 1125 - 1050 = 75 XLM
     let borrower_xlm_after = xlm_token.balance(&borrower);
     let xlm_returned = borrower_xlm_after - borrower_xlm_before;
-    assert_eq!(xlm_returned, 250_000_000_i128, "borrower should get 250 XLM excess collateral back");
+    assert_eq!(xlm_returned, 75_000_000_i128, "borrower should get 75 XLM excess collateral back");
 
     // Third liquidation — position is gone, should panic
     env.as_contract(&contract_id, || {
@@ -3475,11 +3504,19 @@ fn test_liquidate_double_attempt_panics() {
 ///   - Returned BorrowPosition has collateral_amount = 0
 #[test]
 fn test_liquidate_excess_collateral_returned() {
-    let (env, contract_id, _oracle_id, borrower, liquidator, pool_id, _usdc_addr, xlm_addr) =
+    let (env, contract_id, oracle_id, borrower, liquidator, pool_id, _usdc_addr, xlm_addr) =
         setup_liquidation_env();
 
     use soroban_sdk::token::StellarAssetClient;
     let xlm_token = StellarAssetClient::new(&env, &xlm_addr);
+
+    // Get the admin address to set close factor
+    let admin = env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .get::<_, Address>(&LendingKey::Admin)
+            .expect("admin not set")
+    });
 
     let borrower_xlm_before = xlm_token.balance(&borrower);
     assert_eq!(borrower_xlm_before, 0_i128, "borrower starts with 0 XLM (all collateral locked)");
@@ -3494,7 +3531,28 @@ fn test_liquidate_excess_collateral_returned() {
             500_000_000_i128,
         )
     });
-    // After first: 1125 XLM still locked
+    // After first: 1125 XLM still locked, 250 debt remaining
+
+    // Drop price to $0.25 so the remaining position is still underwater
+    // HF = (1125 * 0.25 * 0.8) / 250 = 0.90 < 1.0
+    env.as_contract(&oracle_id, || {
+        MockOracleContract::set_price(
+            env.clone(),
+            xlm_addr.clone(),
+            250_000_000_000_000_000_i128, // $0.25
+            env.ledger().timestamp(),
+        );
+    });
+
+    // Set close_factor to 100% so the second liquidation can fully close
+    env.as_contract(&contract_id, || {
+        PropertyTokenContract::set_close_factor(
+            env.clone(),
+            admin.clone(),
+            pool_id.clone(),
+            PRECISION, // 100%
+        );
+    });
 
     // Second liquidation — covers remaining 250, full close
     let result = env.as_contract(&contract_id, || {
@@ -3511,10 +3569,10 @@ fn test_liquidate_excess_collateral_returned() {
     assert_eq!(result.principal, 0, "position should be fully closed");
     assert_eq!(result.collateral_amount, 0, "no collateral should remain in position");
 
-    // Borrower should receive the excess: 1125 - 875 = 250 XLM
+    // Borrower should receive the excess: 1125 - (250+12.5)/0.25 = 1125 - 1050 = 75 XLM
     let borrower_xlm_after = xlm_token.balance(&borrower);
     let xlm_returned = borrower_xlm_after - borrower_xlm_before;
-    assert_eq!(xlm_returned, 250_000_000_i128, "borrower should receive 250 XLM excess collateral");
+    assert_eq!(xlm_returned, 75_000_000_i128, "borrower should receive 75 XLM excess collateral");
 
     // Verify position was removed from storage
     let stored = env.as_contract(&contract_id, || {
@@ -3683,7 +3741,7 @@ fn test_set_close_factor_as_admin() {
 
 /// Non-admin cannot update the close factor.
 #[test]
-#[should_panic(expected = "NotAdmin")]
+#[should_panic(expected = "only admin")]
 fn test_set_close_factor_unauthorized() {
     let (env, contract_id, _oracle_id, _borrower, liquidator, pool_id, _usdc_addr, _xlm_addr) =
         setup_liquidation_env();

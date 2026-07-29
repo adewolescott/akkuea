@@ -627,7 +627,7 @@ impl PropertyTokenContract {
 
         if remaining_debt == 0 {
             BorrowPosition {
-                pool_id,
+                pool_id: pool_id.clone(),
                 borrower: borrower_address,
                 principal: 0,
                 index_at_borrow: InterestStorage::get_interest_index(&env, &pool_id),
@@ -637,7 +637,7 @@ impl PropertyTokenContract {
             }
         } else {
             BorrowPosition {
-                pool_id,
+                pool_id: pool_id.clone(),
                 borrower: borrower_address,
                 principal: remaining_debt,
                 index_at_borrow: InterestStorage::get_interest_index(&env, &pool_id),
@@ -724,8 +724,7 @@ impl PropertyTokenContract {
     /// * `new_close_factor` – New close factor in PRECISION units (e.g., 50% = 500_000_000_000_000_000).
     /// * `caller`           – Must be the contract admin.
     pub fn set_close_factor(env: Env, caller: Address, pool_id: String, new_close_factor: i128) {
-        caller.require_auth();
-        AdminControl::require_admin(&env, &caller).unwrap_or_else(|e| panic_with_error!(&env, e));
+        require_admin(&env, &caller);
         if new_close_factor <= 0 || new_close_factor > PRECISION {
             panic!("close factor must be between 0 and 1.0 (PRECISION)");
         }
