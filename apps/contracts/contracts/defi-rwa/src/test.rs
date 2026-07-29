@@ -3022,3 +3022,445 @@ fn test_full_emergency_and_recovery_flow() {
     let total = s.contract_client.get_total_deposits(&pool_id);
     assert_eq!(total, 2_000_000_000);
 }
+
+// =========================================================================
+// Liquidation Integration Tests
+// =========================================================================
+
+/// Build a lending environment with a borrow position and make it underwater
+/// by dropping the oracle price. Returns (env, contract_id, oracle_id,
+/// borrower, liquidator, pool_id, usdc_addr, xlm_addr).
+///
+/// Scenario:
+///   - Pool: CF=75%, LT=80%, penalty=5%
+///   - Borrower borrows 500 USDC with 2000 XLM collateral at $1.00/XLM
+///   - Then oracle price is dropped to $0.30/XLM → HF ≈ 0.96 (< 1.0, underwater)
+///   - Liquidator is funded with 2000 USDC for covering debt
+fn setup_liquidation_env(
+) -> (Env, Address, Address, Address, Address, String, Address, Address) {
+    use soroban_sdk::token::StellarAssetClient;
+
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let contract_id = env.register(PropertyTokenContract, (&admin,));
+    let oracle_id = env.register(MockOracleContract, ());
+
+    let borrower = Address::generate(&env);
+    let liquidator = Address::generate(&env);
+
+    let usdc_admin = Address::generate(&env);
+    let usdc_contract = env.register_stellar_asset_contract_v2(usdc_admin.clone());
+    let usdc_token = StellarAssetClient::new(&env, &usdc_contract.address());
+
+    let xlm_admin = Address::generate(&env);
+    let xlm_contract = env.register_stellar_asset_contract_v2(xlm_admin.clone());
+    let xlm_token = StellarAssetClient::new(&env, &xlm_contract.address());
+
+    let pool_id = String::from_str(&env, "USDC-POOL");
+    let pool = LendingPool {
+        id: pool_id.clone(),
+        name: String::from_str(&env, "USDC Lending Pool"),
+        asset: String::from_str(&env, "USDC"),
+        asset_address: usdc_contract.address().clone(),
+        collateral_factor: 750_000_000_000_000_000,  // 75%
+        liquidation_threshold: 800_000_000_000_000_000, // 80%
+        liquidation_penalty: 50_000_000_000_000_000,  // 5%
+        reserve_factor: 1000,
+        is_active: true,
+        created_at: env.ledger().timestamp(),
+    };
+
+    env.as_contract(&contract_id, || {
+        PoolStorage::set(&env, &pool);
+        PoolStorage::set_total_deposits(&env, &pool_id, 10_000_000_000);
+        PoolStorage::set_total_borrows(&env, &pool_id, 0);
+
+        let model = InterestRateModel::default();
+        InterestStorage::set_model(&env, &pool_id, &model);
+        InterestStorage::set_interest_index(&env, &pool_id, PRECISION);
+        InterestStorage::set_last_accrual(&env, &pool_id, env.ledger().timestamp());
+        PriceOracle::set_oracle_address(&env, &oracle_id);
+    });
+
+    // Set initial XLM price: $1.00
+    env.as_contract(&oracle_id, || {
+        MockOracleContract::set_price(
+            env.clone(),
+            xlm_contract.address().clone(),
+            PRECISION,
+            env.ledger().timestamp(),
+        );
+    });
+
+    // Fund participants
+    usdc_token.mint(&borrower, &2_000_000_000);
+    xlm_token.mint(&borrower, &2_000_000_000);
+    usdc_token.mint(&liquidator, &2_000_000_000);
+    usdc_token.mint(&contract_id, &10_000_000_000);
+
+    // Borrower borrows 500 USDC with 2000 XLM at $1.00/XLM
+    // HF = (2000*0.8)/500 = 3.2 → passes both LTV and HF checks ✓
+    env.as_contract(&contract_id, || {
+        PropertyTokenContract::borrow(
+            env.clone(),
+            borrower.clone(),
+            pool_id.clone(),
+            500_000_000_i128,
+            xlm_contract.address().clone(),
+            2_000_000_000_i128,
+        )
+    });
+
+    // Drop XLM price to $0.30 → HF = (2000*0.30*0.8)/500 = 480/500 = 0.96
+    // Now underwater (HF < 1.0) ✓
+    let half_price = (3 * PRECISION) / 10; // 0.30 * PRECISION
+    env.as_contract(&oracle_id, || {
+        MockOracleContract::set_price(
+            env.clone(),
+            xlm_contract.address().clone(),
+            half_price,
+            env.ledger().timestamp(),
+        );
+    });
+
+    (
+        env,
+        contract_id,
+        oracle_id,
+        borrower,
+        liquidator,
+        pool_id,
+        usdc_contract.address().clone(),
+        xlm_contract.address().clone(),
+    )
+}
+
+/// Test 1: Full liquidation closes the position entirely.
+///
+/// Liquidator repays the full 500 USDC debt. Expected:
+///   - Position removed from storage
+///   - total_borrows = 0
+///   - Liquidator receives 1750 XLM (500 + 5% penalty = 525 debt value / $0.30)
+#[test]
+fn test_liquidate_full_position() {
+    let (env, contract_id, _oracle_id, borrower, liquidator, pool_id, usdc_addr, xlm_addr) =
+        setup_liquidation_env();
+
+    use soroban_sdk::token::StellarAssetClient;
+    let xlm_token = StellarAssetClient::new(&env, &xlm_addr);
+
+    let liquidator_xlm_before = xlm_token.balance(&liquidator);
+    let total_borrows_before =
+        env.as_contract(&contract_id, || PoolStorage::get_total_borrows(&env, &pool_id));
+    assert!(total_borrows_before > 0, "should have outstanding borrows");
+
+    // Liquidate the full position
+    let result = env.as_contract(&contract_id, || {
+        PropertyTokenContract::liquidate(
+            env.clone(),
+            liquidator.clone(),
+            pool_id.clone(),
+            borrower.clone(),
+            500_000_000_i128,
+        )
+    });
+
+    // Position should show zero principal
+    assert_eq!(result.principal, 0, "full liquidation should zero out principal");
+
+    // Position should be removed from storage
+    let stored = env.as_contract(&contract_id, || {
+        PositionStorage::get_borrow(&env, &borrower, &pool_id)
+    });
+    assert!(stored.is_none(), "position should be removed after full liquidation");
+
+    // Total borrows should be zero
+    let total_borrows_after =
+        env.as_contract(&contract_id, || PoolStorage::get_total_borrows(&env, &pool_id));
+    assert_eq!(total_borrows_after, 0, "total_borrows should be zero after full liquidation");
+
+    // Liquidator should have received collateral
+    let liquidator_xlm_after = xlm_token.balance(&liquidator);
+    let xlm_received = liquidator_xlm_after - liquidator_xlm_before;
+    // 1750 XLM = (500 + 25) / 0.30, not clamped (1750 < 2000)
+    assert_eq!(xlm_received, 1_750_000_000_i128, "liquidator should receive 1750 XLM");
+}
+
+/// Test 2: Partial liquidation leaves remaining debt and collateral.
+///
+/// Liquidator repays 200 of 500 USDC. Expected:
+///   - Position remains with principal ≈ 300 and reduced collateral
+///   - total_borrows reduced by 200
+///   - Liquidator gets proportional collateral + penalty
+#[test]
+fn test_liquidate_partial_position() {
+    let (env, contract_id, _oracle_id, borrower, liquidator, pool_id, _usdc_addr, xlm_addr) =
+        setup_liquidation_env();
+
+    use soroban_sdk::token::StellarAssetClient;
+    let xlm_token = StellarAssetClient::new(&env, &xlm_addr);
+
+    let liquidator_xlm_before = xlm_token.balance(&liquidator);
+    let total_borrows_before =
+        env.as_contract(&contract_id, || PoolStorage::get_total_borrows(&env, &pool_id));
+
+    // Liquidate 200 of 500 USDC
+    let result = env.as_contract(&contract_id, || {
+        PropertyTokenContract::liquidate(
+            env.clone(),
+            liquidator.clone(),
+            pool_id.clone(),
+            borrower.clone(),
+            200_000_000_i128,
+        )
+    });
+
+    // Position should show remaining principal
+    assert!(result.principal > 0, "partial liquidation should leave remaining debt");
+    assert_eq!(result.principal, 300_000_000, "remaining debt should be 300");
+
+    // Position should still exist
+    let stored = env.as_contract(&contract_id, || {
+        PositionStorage::get_borrow(&env, &borrower, &pool_id)
+    });
+    assert!(stored.is_some(), "position should still exist after partial liquidation");
+    let stored = stored.unwrap();
+    assert_eq!(stored.principal, 300_000_000);
+
+    // Remaining collateral: 2000 - (210 / 0.30) = 2000 - 700 = 1300
+    assert_eq!(stored.collateral_amount, 1_300_000_000_i128);
+
+    // Total borrows reduced by 200
+    let total_borrows_after =
+        env.as_contract(&contract_id, || PoolStorage::get_total_borrows(&env, &pool_id));
+    assert_eq!(
+        total_borrows_after,
+        total_borrows_before - 200_000_000,
+        "total_borrows should be reduced by the repaid amount"
+    );
+
+    // Liquidator received 700 XLM = (200 + 10 penalty) / 0.30
+    let liquidator_xlm_after = xlm_token.balance(&liquidator);
+    let xlm_received = liquidator_xlm_after - liquidator_xlm_before;
+    assert_eq!(xlm_received, 700_000_000_i128, "liquidator should receive 700 XLM");
+}
+
+/// Test 3: Liquidating a healthy position is rejected.
+#[test]
+#[should_panic(expected = "Position is not underwater")]
+fn test_liquidate_healthy_position_rejected() {
+    use soroban_sdk::token::StellarAssetClient;
+
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let contract_id = env.register(PropertyTokenContract, (&admin,));
+    let oracle_id = env.register(MockOracleContract, ());
+
+    let borrower = Address::generate(&env);
+    let liquidator = Address::generate(&env);
+
+    let usdc_admin = Address::generate(&env);
+    let usdc_contract = env.register_stellar_asset_contract_v2(usdc_admin.clone());
+    let usdc_token = StellarAssetClient::new(&env, &usdc_contract.address());
+
+    let xlm_admin = Address::generate(&env);
+    let xlm_contract = env.register_stellar_asset_contract_v2(xlm_admin.clone());
+    let xlm_token = StellarAssetClient::new(&env, &xlm_contract.address());
+
+    let pool_id = String::from_str(&env, "USDC-POOL");
+    let pool = LendingPool {
+        id: pool_id.clone(),
+        name: String::from_str(&env, "USDC Lending Pool"),
+        asset: String::from_str(&env, "USDC"),
+        asset_address: usdc_contract.address().clone(),
+        collateral_factor: 750_000_000_000_000_000,
+        liquidation_threshold: 800_000_000_000_000_000,
+        liquidation_penalty: 50_000_000_000_000_000,
+        reserve_factor: 1000,
+        is_active: true,
+        created_at: env.ledger().timestamp(),
+    };
+
+    env.as_contract(&contract_id, || {
+        PoolStorage::set(&env, &pool);
+        PoolStorage::set_total_deposits(&env, &pool_id, 10_000_000_000);
+        PoolStorage::set_total_borrows(&env, &pool_id, 0);
+        let model = InterestRateModel::default();
+        InterestStorage::set_model(&env, &pool_id, &model);
+        InterestStorage::set_interest_index(&env, &pool_id, PRECISION);
+        InterestStorage::set_last_accrual(&env, &pool_id, env.ledger().timestamp());
+        PriceOracle::set_oracle_address(&env, &oracle_id);
+    });
+
+    // Keep price at $1.00 — position is healthy
+    env.as_contract(&oracle_id, || {
+        MockOracleContract::set_price(
+            env.clone(),
+            xlm_contract.address().clone(),
+            PRECISION,
+            env.ledger().timestamp(),
+        );
+    });
+
+    usdc_token.mint(&borrower, &2_000_000_000);
+    xlm_token.mint(&borrower, &2_000_000_000);
+    usdc_token.mint(&liquidator, &2_000_000_000);
+    usdc_token.mint(&contract_id, &10_000_000_000);
+
+    // Borrow: 500 USDC with 2000 XLM at $1.00 → HF = 3.2 (very healthy)
+    env.as_contract(&contract_id, || {
+        PropertyTokenContract::borrow(
+            env.clone(),
+            borrower.clone(),
+            pool_id.clone(),
+            500_000_000_i128,
+            xlm_contract.address().clone(),
+            2_000_000_000_i128,
+        )
+    });
+
+    // Try to liquidate — should panic because position is healthy
+    env.as_contract(&contract_id, || {
+        PropertyTokenContract::liquidate(
+            env.clone(),
+            liquidator.clone(),
+            pool_id.clone(),
+            borrower.clone(),
+            500_000_000_i128,
+        )
+    });
+}
+
+/// Test 4: Liquidation with zero collateral left (clamp triggered).
+///
+/// When the penalty pushes collateral_to_seize above position.collateral_amount,
+/// the seized amount is clamped to the full collateral, leaving zero collateral.
+/// Scenario: price drops to $0.20/XLM, so full liquidation tries to seize
+/// 525/0.20 = 2625 XLM → clamped to 2000 XLM (all collateral seized).
+#[test]
+fn test_liquidate_zero_collateral_left() {
+    let (env, contract_id, oracle_id, borrower, liquidator, pool_id, _usdc_addr, xlm_addr) =
+        setup_liquidation_env();
+
+    // Drop price further to $0.20/XLM to trigger clamp
+    let low_price = (2 * PRECISION) / 10; // 0.20 * PRECISION
+    env.as_contract(&oracle_id, || {
+        MockOracleContract::set_price(
+            env.clone(),
+            xlm_addr.clone(),
+            low_price,
+            env.ledger().timestamp(),
+        );
+    });
+
+    use soroban_sdk::token::StellarAssetClient;
+    let xlm_token = StellarAssetClient::new(&env, &xlm_addr);
+    let liquidator_xlm_before = xlm_token.balance(&liquidator);
+
+    // Liquidate full position
+    let result = env.as_contract(&contract_id, || {
+        PropertyTokenContract::liquidate(
+            env.clone(),
+            liquidator.clone(),
+            pool_id.clone(),
+            borrower.clone(),
+            500_000_000_i128,
+        )
+    });
+
+    assert_eq!(result.principal, 0, "full liquidation should zero out principal");
+
+    // Position should be removed
+    let stored = env.as_contract(&contract_id, || {
+        PositionStorage::get_borrow(&env, &borrower, &pool_id)
+    });
+    assert!(stored.is_none(), "position should be removed");
+
+    // Liquidator received ALL 2000 XLM (clamped from 2625)
+    let liquidator_xlm_after = xlm_token.balance(&liquidator);
+    let xlm_received = liquidator_xlm_after - liquidator_xlm_before;
+    assert_eq!(xlm_received, 2_000_000_000_i128, "all 2000 XLM collateral seized (clamped)");
+}
+
+/// Test 5: Double liquidation attempt panics — position already removed.
+#[test]
+#[should_panic(expected = "borrow position not found")]
+fn test_liquidate_double_attempt_panics() {
+    let (env, contract_id, _oracle_id, borrower, liquidator, pool_id, _usdc_addr, _xlm_addr) =
+        setup_liquidation_env();
+
+    // First liquidation — fully closes the position
+    env.as_contract(&contract_id, || {
+        PropertyTokenContract::liquidate(
+            env.clone(),
+            liquidator.clone(),
+            pool_id.clone(),
+            borrower.clone(),
+            500_000_000_i128,
+        )
+    });
+
+    // Second liquidation — position is gone, should panic
+    env.as_contract(&contract_id, || {
+        PropertyTokenContract::liquidate(
+            env.clone(),
+            liquidator.clone(),
+            pool_id.clone(),
+            borrower.clone(),
+            500_000_000_i128,
+        )
+    });
+}
+
+/// Test 7: Liquidation penalty bonus is correctly calculated.
+///
+/// Liquidator repays 500 USDC, receives 1750 XLM worth 525 USDC at $0.30/XLM.
+/// That's a 5% bonus on the 500 USDC debt covered.
+#[test]
+fn test_liquidate_penalty_bonus_verified() {
+    let (env, contract_id, _oracle_id, borrower, liquidator, pool_id, usdc_addr, xlm_addr) =
+        setup_liquidation_env();
+
+    use soroban_sdk::token::{StellarAssetClient, TokenClient};
+    let xlm_token = StellarAssetClient::new(&env, &xlm_addr);
+    let usdc_client = TokenClient::new(&env, &usdc_addr);
+
+    let liquidator_xlm_before = xlm_token.balance(&liquidator);
+    let liquidator_usdc_before = usdc_client.balance(&liquidator);
+
+    // Liquidate full position
+    let result = env.as_contract(&contract_id, || {
+        PropertyTokenContract::liquidate(
+            env.clone(),
+            liquidator.clone(),
+            pool_id.clone(),
+            borrower.clone(),
+            500_000_000_i128,
+        )
+    });
+    assert_eq!(result.principal, 0);
+
+    let liquidator_xlm_after = xlm_token.balance(&liquidator);
+    let liquidator_usdc_after = usdc_client.balance(&liquidator);
+
+    let xlm_received = liquidator_xlm_after - liquidator_xlm_before;
+    let usdc_spent = liquidator_usdc_before - liquidator_usdc_after;
+
+    // Liquidator spent 500 USDC
+    assert_eq!(usdc_spent, 500_000_000_i128, "liquidator should spend 500 USDC");
+
+    // Liquidator received 1750 XLM @ $0.30 = $525 worth
+    assert_eq!(xlm_received, 1_750_000_000_i128, "liquidator should receive 1750 XLM");
+
+    // Value of XLM received: 1750 * 0.30 = 525 USDC
+    let xlm_value = (xlm_received * 300_000_000_000_000_000_i128) / PRECISION;
+    assert_eq!(xlm_value, 525_000_000_i128, "collateral value should be 525 USDC");
+
+    // Bonus = 525 - 500 = 25 = 5% of 500 ✓
+    let bonus = xlm_value - usdc_spent;
+    assert_eq!(bonus, 25_000_000_i128, "liquidation bonus should be 5%% (25 USDC)");
+}
