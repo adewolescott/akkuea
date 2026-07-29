@@ -3569,3 +3569,59 @@ fn test_liquidate_close_factor_caps_request() {
         "total_borrows reduced by 250 (capped), not 400"
     );
 }
+
+/// Admin can update the close factor without recreating the pool.
+#[test]
+fn test_set_close_factor_as_admin() {
+    let (env, contract_id, _oracle_id, _borrower, _liquidator, pool_id, _usdc_addr, _xlm_addr) =
+        setup_liquidation_env();
+
+    // Get admin address — the setup registers with a generated admin
+    // We need to read the stored admin to call set_close_factor
+    let admin = env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .get::<_, Address>(&LendingKey::Admin)
+            .expect("admin not set")
+    });
+
+    let pool_before = env.as_contract(&contract_id, || {
+        PoolStorage::get(&env, &pool_id).expect("pool not found")
+    });
+    assert_eq!(pool_before.close_factor, 500_000_000_000_000_000, "default 50%");
+
+    // Admin updates close factor to 40%
+    let new_cf = 400_000_000_000_000_000_i128;
+    env.as_contract(&contract_id, || {
+        PropertyTokenContract::set_close_factor(
+            env.clone(),
+            admin.clone(),
+            pool_id.clone(),
+            new_cf,
+        )
+    });
+
+    let pool_after = env.as_contract(&contract_id, || {
+        PoolStorage::get(&env, &pool_id).expect("pool not found")
+    });
+    assert_eq!(pool_after.close_factor, new_cf, "close factor should be updated to 40%");
+}
+
+/// Non-admin cannot update the close factor.
+#[test]
+#[should_panic(expected = "NotAdmin")]
+fn test_set_close_factor_unauthorized() {
+    let (env, contract_id, _oracle_id, _borrower, liquidator, pool_id, _usdc_addr, _xlm_addr) =
+        setup_liquidation_env();
+
+    // Liquidator (non-admin) tries to change close factor — should panic
+    let new_cf = 400_000_000_000_000_000_i128;
+    env.as_contract(&contract_id, || {
+        PropertyTokenContract::set_close_factor(
+            env.clone(),
+            liquidator.clone(),
+            pool_id.clone(),
+            new_cf,
+        )
+    });
+}

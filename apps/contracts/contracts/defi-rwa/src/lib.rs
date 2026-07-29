@@ -708,6 +708,30 @@ impl PropertyTokenContract {
         result_position
     }
 
+    /// Configure the close factor for a pool — max % of debt liquidatable per tx.
+    ///
+    /// * `pool_id`         – The lending pool identifier.
+    /// * `new_close_factor` – New close factor in PRECISION units (e.g., 50% = 500_000_000_000_000_000).
+    /// * `caller`           – Must be the contract admin.
+    pub fn set_close_factor(env: Env, caller: Address, pool_id: String, new_close_factor: i128) {
+        caller.require_auth();
+        AdminControl::require_admin(&env, &caller).unwrap_or_else(|e| panic_with_error!(&env, e));
+        if new_close_factor <= 0 || new_close_factor > PRECISION {
+            panic!("close factor must be between 0 and 1.0 (PRECISION)");
+        }
+        let mut pool = PoolStorage::get(&env, &pool_id).expect("pool not found");
+        let old = pool.close_factor;
+        pool.close_factor = new_close_factor;
+        PoolStorage::set(&env, &pool);
+        LendingEvents::pool_updated(
+            &env,
+            pool_id,
+            String::from_str(&env, "close_factor"),
+            old,
+            new_close_factor,
+        );
+    }
+
     pub fn accrue_interest(env: Env, pool_id: String) {
         if !PoolStorage::exists(&env, &pool_id) {
             panic!("pool not found");
