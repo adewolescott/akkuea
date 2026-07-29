@@ -1327,14 +1327,14 @@ fn test_borrow_with_insufficient_collateral() {
     xlm_token.mint(&borrower, &1_000_000_000); // Only 1000 XLM
     usdc_token.mint(&contract_id, &10_000_000_000);
 
-    // Try to borrow with insufficient collateral
+    // Try to borrow with sufficient LTV but insufficient health factor.
     // Collateral: 1000 XLM * $1.00 = $1000
-    // Borrow: 1000 USDC = $1000
-    // Health factor = (1000 * 0.8) / 1000 = 0.8 < 1.5 ❌
-    let borrow_amount = 1_000_000_000; // 1000 USDC
-    let collateral_amount = 1_000_000_000; // 1000 XLM (insufficient!)
+    // Borrow: 700 USDC (passes collateral_factor: 700 ≤ 1000*0.75=750)
+    // Health factor = (1000 * 0.8) / 700 ≈ 1.14 < 1.5 ❌
+    let borrow_amount = 700_000_000; // 700 USDC
+    let collateral_amount = 1_000_000_000; // 1000 XLM
 
-    // This should panic with "Health factor too low"
+    // This should panic with "Health factor too low" (LTV passes but HF fails)
     env.as_contract(&contract_id, || {
         PropertyTokenContract::borrow(
             env.clone(),
